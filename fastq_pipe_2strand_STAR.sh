@@ -132,13 +132,12 @@ STAR \
     --outSAMtype BAM SortedByCoordinate \
     --outSAMunmapped Within \
     --outSAMattributes Standard \
-    --quantMode GeneCounts
-    ## 融合遺伝子検出option
-    # --chimSegmentMin 15 \
-    # --chimJunctionOverhangMin 15 \
-    # --chimOutType Junctions WithinBAM SoftClip \
-    # --chimMainSegmentMultNmax 1 \
-    # --chimOutJunctionFormat 1
+    --quantMode GeneCounts \
+    --chimSegmentMin 15 \
+    --chimJunctionOverhangMin 15 \
+    --chimOutType Junctions WithinBAM SoftClip \
+    --chimMainSegmentMultNmax 1 \
+    --chimOutJunctionFormat 1
 
 # STARが失敗した場合は、エラーを記録して終了
 if [ $? -ne 0 ]; then
