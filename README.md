@@ -1,0 +1,2 @@
+# STAR-pipe
+STAR mapping
