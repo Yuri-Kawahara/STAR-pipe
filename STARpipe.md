@@ -1,459 +1,303 @@
-# RNA-seq Pipeline: FASTQ → Count Matrix
+# STAR Parameters Guide
 
-### STAR mapping — Setup & Execution Guide
+### Based on GDC/TCGA pipeline · Explained with STAR manual
 
-> **対象 / Target**  
-> Linux (HPC) · macOS での実行を想定。  
-> Assumes Linux HPC or macOS.
-
------
-
-## 0. スクリプト一覧 / Script overview
-
-|#|Script                            |何をするか / What it does                             |
-|-|----------------------------------|-------------------------------------------------|
-|1|`setup.sh`                        |ツールのインストール / Install tools                       |
-|2|`config.sh`                       |パス・パラメータの一元管理 / Central config (edit here first!)|
-|3|`create_genome_index_hs.sh`       |ヒト用リファレンス DL & インデックス作成 / Human ref + index      |
-|3|`create_genome_index_mm.sh`       |マウス用リファレンス DL & インデックス作成 / Mouse ref + index     |
-|4|`create_igv_bed.sh`               |IGV 用 BED ファイル作成 / BED for IGV                   |
-|5|`create_sample_qclist_20260428.sh`|サンプルリスト自動生成 / Auto-generate sample list          |
-|6|`run_qc_trim.sh`                  |FastQC + fastp (QC & トリミング)                      |
-|7|`run_star_align.sh`               |STAR アライメント / Alignment                          |
-
-
-> **⚠ 旧 `fastq_pipe_2strand_STAR.sh` / `fastq_pipe_2strand_Salmon.sh` は廃止。**  
-> QC と STAR が `run_qc_trim.sh` / `run_star_align.sh` に分離された。  
-> Salmon は現在このパイプラインに含まれない。
+> **ベース / Source**  
+> [GDC mRNA Analysis Pipeline (DR32)](https://docs.gdc.cancer.gov/Data/Bioinformatics_Pipelines/Expression_mRNA_Pipeline/)  
+> [STAR manual 2.7.11b](https://github.com/alexdobin/STAR/blob/master/doc/STARmanual.pdf)
 
 -----
 
-## 1. ディレクトリ構成 / Directory structure
+## 現在の設定 / Current command
 
-> **種が混在する場合はディレクトリを必ず分ける！**  
-> Keep human and mouse in **completely separate directories**.
-
-```
-$HOME/
-├── Reference/
-│   ├── human/          ← FASTA / GTF (human)
-│   └── mouse/          ← FASTA / GTF (mouse)
-│
-├── gdc_reference/
-│   └── star/
-│       ├── GRCh38_v49_star_index/    ← STAR index (human)
-│       └── mm39_star_index/          ← STAR index (mouse)
-│
-├── fastq/
-│   └── zebra/                        ← RAW_FASTQ_DIR (config.sh で設定)
-│       ├── mmSample1_R1_L001.fq.gz
-│       ├── mmSample1_R2_L001.fq.gz
-│       └── trimmed/                  ← fastp 出力先
-│
-└── STAR_output/
-    └── mouse/                        ← STAR_OUTPUT_DIR (config.sh で設定)
-        ├── bam/
-        ├── log_star/
-        └── qc_reports/
+```bash
+STAR \
+  --runThreadN ${RUN_THREADS} \
+  --genomeDir ${ACTIVE_INDEX} \
+  --sjdbGTFfile ${ACTIVE_GTF} \
+  --readFilesIn ${TRIM_FASTQ_1} ${TRIM_FASTQ_2} \
+  --readFilesCommand zcat \
+  --outFileNamePrefix ${BAM_DIR}/${EXP_ID}. \
+  --twopassMode Basic \
+  --outFilterMultimapNmax 20 \
+  --alignSJDBoverhangMin 1 \
+  --outFilterMismatchNmax 10 \
+  --alignIntronMax 300000 \
+  --alignMatesGapMax 300000 \
+  --sjdbScore 2 \
+  --genomeLoad NoSharedMemory \
+  --outFilterMatchNminOverLread 0.33 \
+  --outFilterScoreMinOverLread 0.33 \
+  --outSAMtype BAM SortedByCoordinate \
+  --outSAMunmapped Within \
+  --outSAMattributes Standard \
+  --quantMode GeneCounts \
+  --chimSegmentMin 15 \
+  --chimJunctionOverhangMin 15 \
+  --chimOutType Junctions WithinBAM SoftClip \
+  --chimMainSegmentMultNmax 1 \
+  --chimOutJunctionFormat 1
 ```
 
 -----
 
-## 2. 環境構築 / Environment setup
-
-### 2-1. ツールのインストール / Install tools
-
-`setup.sh` を実行するだけ。
-
-```bash
-bash setup.sh
-```
-
-conda がない場合は先に Miniconda をインストール:  
-https://docs.conda.io/en/latest/miniconda.html
-
-### 2-2. ツールバージョン確認 / Verify tool versions
-
-```bash
-STAR --version       # 推奨: 2.7.x
-fastqc --version
-fastp --version
-```
-
-### 2-3. HPC でモジュールを使う場合 / On HPC cluster
-
-```bash
-module load fastqc
-module load fastp
-module load star
-```
-
-> `run_qc_trim.sh` / `run_star_align.sh` の中に `module load` が書かれているので、  
-> HPC ユーザーは conda activate は不要。
+## パラメータ解説 / Parameter reference
 
 -----
 
-## 3. config.sh の設定 ← **必ず最初に編集する**
+### `--twopassMode Basic`
 
-**全スクリプトが `source ./config.sh` で読み込む。パスはここだけ変える。**  
-All scripts read this file. Edit paths here only.
+1回目でスプライスジャンクションを検出し、2回目のアライメントに活用する。  
+Detects splice junctions in pass 1, uses them to improve alignment in pass 2.
 
-```bash
-# --- サンプルIDのプレフィックスによる種の自動判別 ---
-MOUSE_SAMP_KEY="^mm"    # サンプルIDが "mm" で始まる → マウス
-HUMAN_SAMP_KEY="^Hu"    # サンプルIDが "Hu" で始まる → ヒト
-
-# --- プロジェクト基本ディレクトリ ---
-BASE_DIR="/home/kawayuri"          # ← 自分のホームに変更
-
-# --- 入力データ ---
-RAW_FASTQ_DIR="${BASE_DIR}/fastq/zebra"   # ← FASTQのあるディレクトリ
-
-# --- STAR インデックス ---
-STAR_INDEX_MM="${BASE_DIR}/gdc_reference/mm39_star_index"
-STAR_INDEX_HU="${BASE_DIR}/gdc_reference/star/GRCh38_v49_star_index"
-
-# --- GTF ---
-GENCODE_GTF_MM="${BASE_DIR}/Reference/mouse/gencode.vM38.primary_assembly.annotation.gtf"
-GENCODE_GTF_HU="${BASE_DIR}/Reference/human/gencode.v49.primary_assembly.annotation.gtf"
-
-# --- 出力先 ---
-STAR_OUTPUT_DIR="${BASE_DIR}/STAR_output/mouse"   # ← プロジェクトに合わせて変更
-
-# --- スレッド数 ---
-THREADS=16
-
-# --- サンプルリストファイル名 ---
-RAW_SAMPLE_LIST="samples_202604"
-STAR_READY_LIST="star_ready_samples.txt"
-```
-
-> `STAR_OUTPUT_DIR` のサブディレクトリ (`bam/`, `log_star/`, `qc_reports/`, `array_logs/`) は  
-> config.sh の末尾で `mkdir -p` により自動作成される。手動作成は不要。
-
-**設定後の確認 / Check after editing:**
-
-```bash
-source ./config.sh
-# → "Config loaded successfully." と表示されれば OK
-echo $RAW_FASTQ_DIR
-echo $STAR_INDEX_MM
-```
+> STAR manual: *“New option to activate on the fly ‘per sample’ 2-pass method”*
 
 -----
 
-## 4. リファレンスのダウンロード & インデックス作成
+### `--outFilterMultimapNmax 20`
 
-### 4-1. ディスク容量の目安 / Disk space
+1リードが何箇所にマップされることを許すか。超えたリードは unmapped 扱い。  
+Max loci a read can map to; reads exceeding this are considered unmapped.
 
-|データ            |ヒト (GRCh38 v49)|マウス (GRCm39 M38)|
-|---------------|---------------|----------------|
-|ゲノム FASTA      |~3.2 GB        |~2.8 GB         |
-|GTF            |~1.5 GB        |~1.2 GB         |
-|**STAR インデックス**|**~30 GB**     |**~27 GB**      |
-|**合計目安**       |**~35 GB**     |**~31 GB**      |
+> STAR manual (ENCODE options): *“max number of multiple alignments allowed for a read: if exceeded, the read is considered unmapped”*
 
-
-> STAR インデックスが最も大きい。ホームのクォータを先に確認。  
-> Check your home directory quota before running.
-
-### 4-2. ヒト / Human (GRCh38 / GENCODE v49)
-
-`create_genome_index_hs.sh` 冒頭の設定を編集:
-
-```bash
-BASE_DIR="/home/YOUR_USERNAME"   # ← 変更
-THREADS=16
-OVERHANG=149    # リード長 - 1 (150bp reads → 149)
-```
-
-実行:
-
-```bash
-# HPC
-qsub create_genome_index_hs.sh
-
-# ローカル
-bash create_genome_index_hs.sh
-```
-
-### 4-3. マウス / Mouse (GRCm39 / GENCODE M38)
-
-```bash
-qsub create_genome_index_mm.sh
-# または
-bash create_genome_index_mm.sh
-```
-
-### 4-4. 完了確認 / Verify
-
-```bash
-# SAindex ファイルが存在すれば OK
-ls ~/gdc_reference/star/GRCh38_v49_star_index/SAindex   # human
-ls ~/gdc_reference/mm39_star_index/SAindex               # mouse
-```
+|      |                                |
+|------|--------------------------------|
+|Up →  |より多くのリピート領域・偽遺伝子リードを拾う。発現定量のノイズ増|
+|Down →|ユニークマップのみに近づく。融合遺伝子検出感度が下がる     |
 
 -----
 
-## 5. サンプルリストの作成
+### `--alignSJDBoverhangMin 1`
 
-### 5-1. FASTQファイルの命名規則 / Naming convention
+**アノテーション済み**スプライスジャンクションのオーバーハング最小長。  
+Min overhang required for *annotated* splice junctions.
 
-`create_sample_qclist_20260428.sh` は **R1/R2 を含むファイル名** を自動検出する。
+> STAR manual (ENCODE options): *“minimum overhang for annotated junctions”*
 
-```
-{SAMPLE_ID}_R1_{anything}.fq.gz   ← Read 1
-{SAMPLE_ID}_R2_{anything}.fq.gz   ← Read 2
-```
-
-> サンプルIDの先頭文字でヒト/マウスを区別する（`config.sh` の `MOUSE_SAMP_KEY` / `HUMAN_SAMP_KEY`）。  
-> デフォルト: `mm` → マウス、`Hu` → ヒト。
-
-### 5-2. 実行 / Run
-
-```bash
-bash create_sample_qclist_20260428.sh
-```
-
-何をするか:
-
-- `RAW_FASTQ_DIR` 内で `*R1*` ファイルを検索し、対応する `*R2*` の存在を確認
-- ファイル名から R1/R2 部分を除いてサンプルIDを抽出
-- ソート済みユニークリストを `samples_202604` に保存
-
-**確認 / Check:**
-
-```bash
-cat samples_202604
-wc -l samples_202604   # サンプル数を確認
-```
-
-### 5-3. STAR 実行用リストの準備 / Prepare STAR-ready list
-
-QC & トリミングが終わったサンプルだけを `star_ready_samples.txt` に入れる。  
-`run_star_align.sh` はこちらを参照する。
-
-```bash
-# 全サンプルをそのまま使う場合
-cp samples_202604 star_ready_samples.txt
-
-# トリミング済みファイルの存在で自動フィルタする場合
-while read id; do
-  if [ -f "${BASE_DIR}/fastq/zebra/trimmed/${id}_trim_1.fq.gz" ]; then
-    echo "$id"
-  fi
-done < samples_202604 > star_ready_samples.txt
-
-wc -l star_ready_samples.txt
-```
+|      |                    |
+|------|--------------------|
+|Up →  |既知ジャンクションへのマップが厳しくなる|
+|Down →|1が最小値（最大感度）         |
 
 -----
 
-## 6. Step 1: QC & トリミング (run_qc_trim.sh)
+### `--outFilterMismatchNmax 10`
 
-### FastQC + fastp でリードの品質確認とアダプター除去を行う。
+リードペアあたりの許容ミスマッチ塩基数の上限（絶対値）。  
+Max number of mismatches per read pair (absolute).
 
-**実行 / Run:**
+> STAR manual (ENCODE options): *“maximum number of mismatches per pair, large number switches off this filter”*
 
-```bash
-# HPC ジョブアレイ (全サンプル一括)
-NUM=$(wc -l < samples_202604 | awk '{print $1}')
-qsub -t 1-${NUM} run_qc_trim.sh
+> GDC は `999`（実質OFF）にして `--outFilterMismatchNoverLmax 0.1` で相対制御する方式を採用。  
+> 絶対値で制御したい場合はこのパラメータを使う。
 
-# ローカルで1サンプルだけテスト
-bash run_qc_trim.sh sample_id_here
-```
-
-> スクリプト内部では `source ./config.sh` でパスを読み込む。  
-> トリミング済みファイルが既に存在する場合はスキップされる (`if [ ! -f ... ]`)。
-
-**出力先 / Output:**
-
-```
-STAR_output/mouse/qc_reports/
-├── {SAMPLE}_fastqc.html       ← FastQC レポート (トリミング前)
-├── {SAMPLE}_fastp.html        ← fastp レポート
-└── {SAMPLE}_fastp.json
-
-fastq/zebra/trimmed/
-├── {SAMPLE}_trim_1.fq.gz      ← トリミング済み R1
-└── {SAMPLE}_trim_2.fq.gz      ← トリミング済み R2
-```
-
-**確認 / Check:**
-
-```bash
-ls fastq/zebra/trimmed/ | wc -l    # ファイル数 = サンプル数 × 2 か確認
-# fastp レポートで trimming rate を確認
-open STAR_output/mouse/qc_reports/SAMPLE_fastp.html
-```
+|      |                                 |
+|------|---------------------------------|
+|Up →  |ミスマッチの多いリードも通過。低品質サンプルや異種間マッピング向き|
+|Down →|厳密になる。高品質サンプルや SNV 解析向き          |
 
 -----
 
-## 7. Step 2: STAR アライメント (run_star_align.sh)
+### `--alignIntronMax 300000`
 
-### トリミング済みリードをゲノムにマッピングし、BAM とカウントテーブルを出力する。
+イントロンの最大長 (bp)。これを超えるスプライシングは無視される。  
+Max intron size in bp.
 
-**ヒト/マウスの自動判別 / Auto species detection:**  
-サンプルIDの先頭が `mm` → マウス index を使用  
-サンプルIDの先頭が `Hu` → ヒト index を使用  
-それ以外 → エラーで停止
+> STAR manual (ENCODE options): *“maximum intron length”*
 
-**実行 / Run:**
+> GDC (ヒト/マウス標準) は `1000000`。ヒトには長いイントロン（～500kb）が存在するため、`300000` では見逃す可能性がある。
 
-```bash
-# HPC ジョブアレイ
-NUM=$(wc -l < star_ready_samples.txt | awk '{print $1}')
-qsub -t 1-${NUM} run_star_align.sh
-
-# ローカルで1サンプルだけテスト
-bash run_star_align.sh mmSample1_L001
-```
-
-**主要 STAR パラメータ / Key parameters:**
-
-|パラメータ                    |値                           |説明                                 |
-|-------------------------|----------------------------|-----------------------------------|
-|`--twopassMode Basic`    |Basic                       |2パスモード。スプライスジャンクションの検出感度が上がる       |
-|`--outFilterMultimapNmax`|20                          |マルチマップ許容数（デフォルト10より高め）             |
-|`--outFilterMismatchNmax`|10                          |許容ミスマッチ数                           |
-|`--alignIntronMax`       |300000                      |イントロン最大長 (bp)                      |
-|`--quantMode GeneCounts` |-                           |遺伝子カウントを `ReadsPerGene.out.tab` に出力|
-|`--chimSegmentMin`       |15                          |キメラ (融合遺伝子) 検出の最小セグメント長            |
-|`--chimOutType`          |Junctions WithinBAM SoftClip|キメラ読みを BAM に含める                    |
-
-**出力先 / Output:**
-
-```
-STAR_output/mouse/
-├── bam/
-│   ├── {SAMPLE}.Aligned.sortedByCoord.out.bam
-│   ├── {SAMPLE}.Aligned.sortedByCoord.out.bam.bai  ← samtools index 要
-│   └── {SAMPLE}.ReadsPerGene.out.tab   ← カウントテーブル
-└── log_star/
-    ├── {SAMPLE}.Log.final.out    ← マッピング率サマリ
-    ├── {SAMPLE}.Log.out
-    └── {SAMPLE}.SJ.out.tab       ← スプライスジャンクション
-```
-
-**確認 / Check:**
-
-```bash
-# BAM ファイル数の確認
-ls STAR_output/mouse/bam/*.bam | wc -l
-
-# マッピング率の確認 (60% 以上が目安)
-grep "Uniquely mapped reads %" STAR_output/mouse/log_star/*.Log.final.out
-```
+|      |                                   |
+|------|-----------------------------------|
+|Up →  |長いイントロンを持つ遺伝子をカバー。ヒトには `1000000` 推奨|
+|Down →|短いイントロンの生物種（線虫等）向き。誤マッピング減         |
 
 -----
 
-## 8. カウントテーブルのストランド確認
+### `--alignMatesGapMax 300000`
 
-`ReadsPerGene.out.tab` には3列のカウントがある。
+ペアエンドの2本のリード間の最大ゲノム距離 (bp)。  
+Max genomic distance between paired-end mates.
 
-|列   |意味              |
+> STAR manual (ENCODE options): *“maximum genomic distance between mates”*
+
+> `alignIntronMax` と同じ値にするのが基本。GDC は両方 `1000000`。
+
+|      |                          |
+|------|--------------------------|
+|Up →  |遠く離れたペアも許容。ロングインサートライブラリ向き|
+|Down →|近接ペアのみ許容。誤マッピング減          |
+
+-----
+
+### `--sjdbScore 2`
+
+スプライスジャンクションを跨ぐアライメントへのボーナススコア。  
+Bonus alignment score for reads crossing splice junctions.
+
+> GDC (ICGC 方式) で採用。STAR デフォルトも `2`。
+
+|      |                      |
+|------|----------------------|
+|Up →  |ジャンクション跨ぎリードが優先されやすくなる|
+|Down →|ジャンクション優先度が下がる        |
+
+-----
+
+### `--genomeLoad NoSharedMemory`
+
+ゲノムをプロセス間で共有しない。  
+Don’t share genome in memory across processes.
+
+> STAR manual: *“By default, genomeLoad NoSharedMemory, shared memory is not used.”*
+
+> HPC ジョブアレイでは `NoSharedMemory` が安全。`LoadAndKeep` にすると複数ジョブで共有できるが環境依存のトラブルが多い。
+
+-----
+
+### `--outFilterMatchNminOverLread 0.33`
+
+マッチ塩基数 / リード長 の最小比率。  
+Min ratio of matched bases to read length.
+
+> GDC・ENCODE・ICGC 全パイプラインが `0.33` を採用。STAR デフォルトは `0.66`。
+
+|      |                             |
+|------|-----------------------------|
+|Up →  |より厳密。短いリードや末端品質が低いリードが落ちやすくなる|
+|Down →|より緩く。低品質リードもマップされやすい         |
+
+-----
+
+### `--outFilterScoreMinOverLread 0.33`
+
+アライメントスコア / リード長 の最小比率。  
+Min ratio of alignment score to read length.
+
+> `outFilterMatchNminOverLread` と対になるパラメータ。同じ値にするのが標準。
+
+|      |                  |
+|------|------------------|
+|Up →  |スコアの低いアライメントが除去される|
+|Down →|低スコアアライメントも通過     |
+
+-----
+
+### `--outSAMtype BAM SortedByCoordinate`
+
+ゲノム座標でソートされた BAM を出力する。  
+Output coordinate-sorted BAM.
+
+> STAR manual: *“output sorted by coordinate Aligned.sortedByCoord.out.bam file, similar to samtools sort command”*
+
+> IGV・featureCounts・tximport すべてに必要。変更不要。
+
+-----
+
+### `--outSAMunmapped Within`
+
+マップされなかったリードも BAM ファイルに含める。  
+Keep unmapped reads inside the BAM.
+
+> STAR manual: *“outSAMunmapped Within option”*
+
+> QC・デバッグに有用。削除するとBAMサイズが小さくなる。
+
+-----
+
+### `--outSAMattributes Standard`
+
+標準 SAM タグ（NH HI NM MD AS）を付与する。  
+Add standard SAM tags.
+
+> featureCounts・GATK 等の下流ツールはこれらのタグを期待する。変更不要。
+
+-----
+
+### `--quantMode GeneCounts`
+
+遺伝子ごとのリードカウントを `ReadsPerGene.out.tab` に出力する。  
+Output per-gene read counts to `ReadsPerGene.out.tab`.
+
+> STAR manual: *“count reads per gene”*
+
+出力される3列:
+
+|列   |内容              |
 |----|----------------|
 |col2|Unstranded      |
 |col3|Stranded (sense)|
 |col4|Antisense       |
 
-どの列を使うか確認する:
 
-```bash
-# R での確認
-counts <- read.table("sample.ReadsPerGene.out.tab", skip=4)
-colSums(counts[, 2:4])
-# 最も大きい列がそのライブラリのストランドに対応
-```
-
-> 最も合計が大きい列を DESeq2 / edgeR に渡す。
+> DESeq2・edgeR に直接渡せる。どの列を使うかはライブラリのストランド設定に依存。
 
 -----
 
-## 9. IGV での可視化
+### `--chimSegmentMin 15`
 
-IGV BED ファイルはインデックス作成時に自動生成される。  
-マウス単体で別途必要な場合:
+キメラアライメントのメインセグメントの最小長 (bp)。`0` にすると chimeric 出力が無効。  
+Min length of chimeric segment. Set to `0` to disable chimeric output entirely.
 
-```bash
-bash create_igv_bed.sh
-```
+> STAR manual: *“minimum length of chimeric segment length; if 0, no chimeric output”*
 
-IGV 読み込み手順:
+|      |                      |
+|------|----------------------|
+|Up →  |より確信度の高い融合遺伝子のみ検出。偽陽性減|
+|Down →|短いセグメントも拾う。感度上がるが偽陽性増 |
 
-```
-1. Genomes > Load Genome from File
-   → GRCm39.primary_assembly.genome.fa  (mouse)
-   → GRCh38.primary_assembly.genome.fa  (human)
 
-2. File > Load from File
-   → mouse_transcripts.bed  or  human_transcripts.bed
-
-3. 検索ボックスで遺伝子名を入力 (例: Trp53, Myc)
-```
+> **融合遺伝子解析が不要なら、`chimSegmentMin` 以下の chim 系5パラメータをまとめて削除するとランタイムが短くなる。**
 
 -----
 
-## 10. 実行順序まとめ / Execution order
+### `--chimJunctionOverhangMin 15`
 
-```
-Step 0  config.sh を編集 ← まずここ
-        source ./config.sh  # "Config loaded successfully." を確認
+キメラジャンクションのオーバーハング最小長 (bp)。  
+Min overhang for chimeric junction.
 
-Step 1  ツールインストール (初回のみ)
-        bash setup.sh
+> GDC 標準。`chimSegmentMin` と同じ値にするのが基本。
 
-Step 2  リファレンス & インデックス作成 (初回のみ)
-        bash create_genome_index_hs.sh   # human
-        bash create_genome_index_mm.sh   # mouse
-        → ls ~/gdc_reference/star/*/SAindex で確認
-
-Step 3  サンプルリスト作成
-        bash create_sample_qclist_20260428.sh
-        → cat samples_202604 で目視確認
-
-Step 4  QC & トリミング
-        qsub -t 1-N run_qc_trim.sh
-        → trimmed/ にファイルが揃っているか確認
-
-Step 5  STAR 実行用リスト作成
-        cp samples_202604 star_ready_samples.txt  # (または絞り込み)
-
-Step 6  STAR アライメント
-        qsub -t 1-N run_star_align.sh
-        → Log.final.out でマッピング率を確認
-```
+|      |            |
+|------|------------|
+|Up →  |より厳密な融合遺伝子検出|
+|Down →|感度上がるが偽陽性増  |
 
 -----
 
-## 11. ヒト ↔ マウス 切り替えチェックリスト
+### `--chimOutType Junctions WithinBAM SoftClip`
 
-`config.sh` で変更するのみ。スクリプト本体は触らない。
+キメラリードの出力形式。  
+Output format for chimeric reads.
 
-|変数                                 |ヒト                         |マウス                        |
-|-----------------------------------|---------------------------|---------------------------|
-|`STAR_INDEX_HU` / `STAR_INDEX_MM`  |`GRCh38_v49_star_index`    |`mm39_star_index`          |
-|`GENCODE_GTF_HU` / `GENCODE_GTF_MM`|`gencode.v49...gtf`        |`gencode.vM38...gtf`       |
-|`STAR_OUTPUT_DIR`                  |`STAR_output/human_project`|`STAR_output/mouse_project`|
-|`RAW_SAMPLE_LIST` のIDプレフィックス       |`Hu`                       |`mm`                       |
+> STAR manual: *“in addition to chimeric junction information, output chimeric alignments with soft-clipping into main genomic BAM file”*
 
-
-> `run_star_align.sh` はサンプルIDの先頭を `config.sh` の `MOUSE_SAMP_KEY` / `HUMAN_SAMP_KEY`  
-> と照合して index を自動選択する。プレフィックスが合っていないとエラーで停止する。
+> `Junctions` → `Chimeric.out.junction` ファイルを出力（STAR-Fusion の入力）  
+> `WithinBAM SoftClip` → 通常の BAM にも chimeric reads を含める
 
 -----
 
-## 12. よくあるエラーと対処 / Troubleshooting
+### `--chimMainSegmentMultNmax 1`
 
-|エラー                                  |原因                |対処                                                   |
-|-------------------------------------|------------------|-----------------------------------------------------|
-|`SAindex not found`                  |インデックス未完成         |Step 2 を再実行。ログ確認                                     |
-|`FASTQ files not found`              |パスかファイル名の誤り       |`ls ${RAW_FASTQ_DIR}` で確認                            |
-|`ERROR: Unknown species prefix`      |サンプルIDのプレフィックス不一致 |`config.sh` の `MOUSE_SAMP_KEY` / `HUMAN_SAMP_KEY` を確認|
-|fastp failed                         |メモリ不足 or ファイル破損   |`md5sum` でファイル整合性を確認                                 |
-|STAR: `genome files are inconsistent`|インデックスが壊れている      |インデックスを削除して再構築                                       |
-|`Config loaded` が出ない                 |`config.sh` のパスが違う|スクリプトと同じディレクトリで実行しているか確認                             |
+キメラのメインセグメントの最大マルチマップ数。  
+Max multimapping for the main segment of a chimeric read.
+
+> `1` = メインセグメントがユニークにマップされたものだけ chimeric 候補にする。偽陽性を抑える。変更不要。
+
+-----
+
+### `--chimOutJunctionFormat 1`
+
+Junction ファイルの出力形式。STAR-Fusion が要求する形式。  
+Junction output format required by STAR-Fusion. 変更不要。
+
+-----
+
+## 参照 / References
+
+- GDC mRNA Analysis Pipeline: https://docs.gdc.cancer.gov/Data/Bioinformatics_Pipelines/Expression_mRNA_Pipeline/
+- STAR manual 2.7.11b: https://github.com/alexdobin/STAR/blob/master/doc/STARmanual.pdf
 
 -----
 
