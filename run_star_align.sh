@@ -21,16 +21,15 @@ if [ -z "${EXP_ID}" ]; then exit 1; fi
 
 module load star
 
-# サンプルIDの先頭による切り替え
-PREFIX=${EXP_ID:0:2}
-if [ "${PREFIX}" == "mm" ]; then
+# サンプルIDの先頭による切り替え（config.shのフラグを正規表現として使用）
+if [[ "${EXP_ID}" =~ ${MOUSE_SAMP_KEY} ]]; then
     ACTIVE_INDEX=${STAR_INDEX_MM}
     ACTIVE_GTF=${GENCODE_GTF_MM}
-elif [ "${PREFIX}" == "Hu" ]; then
+elif [[ "${EXP_ID}" =~ ${HUMAN_SAMP_KEY} ]]; then
     ACTIVE_INDEX=${STAR_INDEX_HU}
     ACTIVE_GTF=${GENCODE_GTF_HU}
 else
-    echo "ERROR: Unknown prefix [${PREFIX}]"
+    echo "ERROR: Unknown species prefix in sample ID [${EXP_ID}]" >&2
     exit 1
 fi
 
@@ -45,7 +44,7 @@ STAR --runThreadN ${RUN_THREADS} \
      --readFilesIn ${TRIM_FASTQ_1} ${TRIM_FASTQ_2} \
      --readFilesCommand zcat \
      --outFileNamePrefix ${BAM_DIR}/${EXP_ID}. \
-         --twopassMode Basic \
+     --twopassMode Basic \
     --outFilterMultimapNmax 20 \
     --alignSJDBoverhangMin 1 \
     --outFilterMismatchNmax 10 \

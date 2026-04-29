@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# mouse sample flag
+MOUSE_SAMP_KEY="^mm"
+
+# human sample flag
+HUMAN_SAMP_KEY="^Hu"
+
 # --- プロジェクト基本ディレクトリ ---
 BASE_DIR="/home/kawayuri"
 
@@ -15,7 +21,7 @@ GENCODE_GTF_MM="${BASE_DIR}/Reference/mouse/gencode.vM38.primary_assembly.annota
 GENCODE_GTF_HU="${BASE_DIR}/Reference/human/gencode.v49.primary_assembly.annotation.gtf"
 
 # --- 出力先ディレクトリ ---
-STAR_OUTPUT_DIR="${BASE_DIR}/STAR_output/zebra"
+STAR_OUTPUT_DIR="${BASE_DIR}/STAR_output/mouse"
 
 # --- 実行パラメータ ---
 THREADS=16
