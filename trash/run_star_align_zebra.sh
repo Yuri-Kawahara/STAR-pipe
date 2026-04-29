@@ -48,18 +48,13 @@ STAR --runThreadN ${RUN_THREADS} \
     --outFilterMultimapNmax 20 \
     --alignSJDBoverhangMin 1 \
     --outFilterMismatchNmax 10 \
-    --outFilterMultimapNmax 20 \
-    --alignIntronMax 1000000 \
-    --alignIntromMin 20 \ 
-    --alignMatesGapMax 1000000 \
+    --alignIntronMax 300000 \
+    --alignMatesGapMax 300000 \
     --sjdbScore 2 \
-    --limitBAMsortRAM 0 \
     --genomeLoad NoSharedMemory \
     --outFilterMatchNminOverLread 0.33 \
     --outFilterScoreMinOverLread 0.33 \
-    --outSAMstrandField intronMotif \
     --outSAMtype BAM SortedByCoordinate \
-    --quantMode GeneCounts \
     --outSAMunmapped Within \
     --outSAMattributes Standard \
     --quantMode GeneCounts \
