@@ -1,246 +1,183 @@
-# RNA-seq Pipeline: FASTQ to Count Matrix
+# RNA-seq Pipeline: FASTQ → Count Matrix
 
-### STAR / Salmon — Setup & Execution Guide
+### STAR mapping — Setup & Execution Guide
 
-> **対象読者 / Target reader**  
-> Linux (HPC/local) · macOS での実行を想定。Windows は WSL2 推奨。  
-> Assumes Linux (HPC or local) or macOS. Windows users: use WSL2.
+> **対象 / Target**  
+> Linux (HPC) · macOS での実行を想定。  
+> Assumes Linux HPC or macOS.
 
 -----
 
 ## 0. スクリプト一覧 / Script overview
 
-|#|Script                            |何をするか / What it does                               |
-|-|----------------------------------|---------------------------------------------------|
-|1|`setup.sh`                        |ツールのインストール / Install tools                         |
-|2|`create_genome_index_hs.sh`       |ヒト用リファレンス DL & インデックス作成 / Human ref + index        |
-|2|`create_genome_index_mm.sh`       |マウス用リファレンス DL & インデックス作成 / Mouse ref + index       |
-|3|`create_igv_bed.sh`               |IGV 表示用 BED ファイル作成 / BED for IGV (mouse standalone)|
-|4|`create_sample_qclist_20260428.sh`|サンプルリスト自動生成 / Auto-generate sample list            |
-|5|`fastq_pipe_2strand_STAR.sh`      |QC → Trim → STAR アライメント / QC → Trim → Align        |
-|6|`fastq_pipe_2strand_Salmon.sh`    |QC → Trim → Salmon 定量 / QC → Trim → Quantify       |
+|#|Script                            |何をするか / What it does                             |
+|-|----------------------------------|-------------------------------------------------|
+|1|`setup.sh`                        |ツールのインストール / Install tools                       |
+|2|`config.sh`                       |パス・パラメータの一元管理 / Central config (edit here first!)|
+|3|`create_genome_index_hs.sh`       |ヒト用リファレンス DL & インデックス作成 / Human ref + index      |
+|3|`create_genome_index_mm.sh`       |マウス用リファレンス DL & インデックス作成 / Mouse ref + index     |
+|4|`create_igv_bed.sh`               |IGV 用 BED ファイル作成 / BED for IGV                   |
+|5|`create_sample_qclist_20260428.sh`|サンプルリスト自動生成 / Auto-generate sample list          |
+|6|`run_qc_trim.sh`                  |FastQC + fastp (QC & トリミング)                      |
+|7|`run_star_align.sh`               |STAR アライメント / Alignment                          |
+
+
+> **⚠ 旧 `fastq_pipe_2strand_STAR.sh` / `fastq_pipe_2strand_Salmon.sh` は廃止。**  
+> QC と STAR が `run_qc_trim.sh` / `run_star_align.sh` に分離された。  
+> Salmon は現在このパイプラインに含まれない。
 
 -----
 
 ## 1. ディレクトリ構成 / Directory structure
 
-:::message alert
-**種が混在する場合はディレクトリを必ず分けること！**  
-If you analyze multiple species (e.g., human + mouse), keep them in **completely separate directories**.  
-インデックスやカウントファイルを混在させると後工程（tximport 等）で取り返しがつかないミスになる。
-:::
+> **種が混在する場合はディレクトリを必ず分ける！**  
+> Keep human and mouse in **completely separate directories**.
 
 ```
 $HOME/
 ├── Reference/
-│   ├── human/          ← ヒト用 FASTA / GTF / Salmon index
-│   │   └── igv/
-│   └── mouse/          ← マウス用 FASTA / GTF / Salmon index
-│       └── igv/
+│   ├── human/          ← FASTA / GTF (human)
+│   └── mouse/          ← FASTA / GTF (mouse)
 │
 ├── gdc_reference/
-│   ├── star/
-│   │   ├── GRCh38_v49_star_index/    ← STAR index (human)
-│   │   └── mm39_star_index/          ← STAR index (mouse)
-│   └── salmon/
-│       └── gencode.v49.human_salmon_index/
+│   └── star/
+│       ├── GRCh38_v49_star_index/    ← STAR index (human)
+│       └── mm39_star_index/          ← STAR index (mouse)
 │
 ├── fastq/
-│   └── YOUR_PROJECT/
-│       ├── sample1_1.fq.gz
-│       ├── sample1_2.fq.gz
-│       └── trimmed/
+│   └── zebra/                        ← RAW_FASTQ_DIR (config.sh で設定)
+│       ├── mmSample1_R1_L001.fq.gz
+│       ├── mmSample1_R2_L001.fq.gz
+│       └── trimmed/                  ← fastp 出力先
 │
-├── STAR_output/
-│   └── YOUR_PROJECT/
-│       ├── bam/
-│       ├── log_star/
-│       └── qc_reports/
-│
-└── SALMON_output/
-    └── YOUR_PROJECT/
+└── STAR_output/
+    └── mouse/                        ← STAR_OUTPUT_DIR (config.sh で設定)
+        ├── bam/
+        ├── log_star/
+        └── qc_reports/
 ```
 
 -----
 
 ## 2. 環境構築 / Environment setup
 
-### 2-1. HPC (クラスタ) の場合 / On HPC cluster
+### 2-1. ツールのインストール / Install tools
 
-```bash
-# 利用可能なモジュールを確認する / Check available modules
-module avail star
-module avail salmon
-module avail fastqc
-module avail fastp
-
-# ロードする / Load them
-module use /usr/local/package/modulefiles
-module load star
-module load salmon
-module load fastqc
-module load fastp
-```
-
-> バージョンが古い場合や conda を使いたい場合は 2-2 へ。  
-> If versions are outdated or you prefer conda, see 2-2.
-
------
-
-### 2-2. conda 環境を使う場合 / Using conda
-
-`setup.sh` を実行するだけ / Just run `setup.sh`:
+`setup.sh` を実行するだけ。
 
 ```bash
 bash setup.sh
 ```
 
-内容は以下の通り:
+conda がない場合は先に Miniconda をインストール:  
+https://docs.conda.io/en/latest/miniconda.html
 
-```bash
-# setup.sh の中身 / Content of setup.sh
-conda create -n bio_tools -c bioconda -c conda-forge \
-    fastqc \
-    fastp \
-    star -y
-
-# Salmon は別途追加推奨
-conda install -n bio_tools -c bioconda salmon
-```
-
-> conda がない場合は先に Miniconda をインストール:  
-> Install Miniconda first if you don’t have conda:  
-> https://docs.conda.io/en/latest/miniconda.html
-
-パイプライン実行前に環境を有効化する / Activate before running:
-
-```bash
-conda activate bio_tools
-```
-
------
-
-### 2-3. ツールバージョン確認 / Verify tool versions
+### 2-2. ツールバージョン確認 / Verify tool versions
 
 ```bash
 STAR --version       # 推奨: 2.7.x
-salmon --version     # 推奨: 1.10.x
 fastqc --version
 fastp --version
-python3 --version    # 3.8 以上必要 (IGV BED 作成スクリプト用)
 ```
 
------
-
-### 2-4. Mac の注意点 / macOS notes
-
-macOS の標準 `bash` は **version 3.2** で古い (`for` ループの `(( ))` 等が動作しない場合がある)。
+### 2-3. HPC でモジュールを使う場合 / On HPC cluster
 
 ```bash
-# bash バージョン確認
-bash --version
-
-# Homebrew で新しい bash をインストール (推奨)
-brew install bash
-
-# ツール類も Homebrew or conda で入れる
-brew install fastqc fastp
+module load fastqc
+module load fastp
+module load star
 ```
 
-`wc -l` の出力に余分なスペースが含まれる問題は `create_sample_qclist_20260428.sh` で対処済み (`awk '{print $1}'` でトリム)。
+> `run_qc_trim.sh` / `run_star_align.sh` の中に `module load` が書かれているので、  
+> HPC ユーザーは conda activate は不要。
 
 -----
 
-### 2-5. Windows の場合 / Windows
+## 3. config.sh の設定 ← **必ず最初に編集する**
 
-**WSL2 (Ubuntu)** を使えばほぼ Linux と同じ手順で動く。  
-WSL2 上で conda または apt でツールを導入する。
-
-```powershell
-# PowerShell で WSL2 インストール
-wsl --install
-```
-
------
-
-## 3. リファレンスのダウンロード & インデックス作成
-
-### 3-1. ディスク容量の目安 / Disk space requirements
-
-|データ             |ヒト (GRCh38 v49)|マウス (GRCm39 M38)|
-|----------------|---------------|----------------|
-|ゲノム FASTA (解凍後) |~3.2 GB        |~2.8 GB         |
-|トランスクリプトーム FASTA|~0.2 GB        |~0.2 GB         |
-|GTF             |~1.5 GB        |~1.2 GB         |
-|**STAR インデックス** |**~30 GB**     |**~27 GB**      |
-|Salmon インデックス   |~2 GB          |~1.5 GB         |
-|IGV BED         |~0.1 GB        |~0.1 GB         |
-|**合計目安**        |**~37 GB**     |**~33 GB**      |
-
-:::message
-STAR インデックスが最も大きい。ホームディレクトリのクォータに注意。  
-STAR index is the largest. Check your home directory quota first.
-:::
-
------
-
-### 3-2. ヒトの場合 / Human (GRCh38 / GENCODE v49)
-
-`create_genome_index_hs.sh` の冒頭の **設定項目** を自分の環境に合わせて書き換える:
+**全スクリプトが `source ./config.sh` で読み込む。パスはここだけ変える。**  
+All scripts read this file. Edit paths here only.
 
 ```bash
-### ============================================================
-### — !! 設定項目 !! —  ← ここだけ変更する / Change only here
-### ============================================================
-BASE_DIR="/home/YOUR_USERNAME"          # ← 自分のホームに変更
+# --- サンプルIDのプレフィックスによる種の自動判別 ---
+MOUSE_SAMP_KEY="^mm"    # サンプルIDが "mm" で始まる → マウス
+HUMAN_SAMP_KEY="^Hu"    # サンプルIDが "Hu" で始まる → ヒト
 
-REF_DIR=${BASE_DIR}/Reference/human/
-SALMON_INDEX=${BASE_DIR}/gdc_reference/salmon/gencode.v49.human_salmon_index/
-STAR_INDEX=${BASE_DIR}/gdc_reference/star/GRCh38_v49_star_index/
+# --- プロジェクト基本ディレクトリ ---
+BASE_DIR="/home/kawayuri"          # ← 自分のホームに変更
 
-THREADS=16        # 使えるコア数に合わせる
-OVERHANG=149      # リード長 - 1 (150bp reads → 149, 100bp reads → 99)
+# --- 入力データ ---
+RAW_FASTQ_DIR="${BASE_DIR}/fastq/zebra"   # ← FASTQのあるディレクトリ
+
+# --- STAR インデックス ---
+STAR_INDEX_MM="${BASE_DIR}/gdc_reference/mm39_star_index"
+STAR_INDEX_HU="${BASE_DIR}/gdc_reference/star/GRCh38_v49_star_index"
+
+# --- GTF ---
+GENCODE_GTF_MM="${BASE_DIR}/Reference/mouse/gencode.vM38.primary_assembly.annotation.gtf"
+GENCODE_GTF_HU="${BASE_DIR}/Reference/human/gencode.v49.primary_assembly.annotation.gtf"
+
+# --- 出力先 ---
+STAR_OUTPUT_DIR="${BASE_DIR}/STAR_output/mouse"   # ← プロジェクトに合わせて変更
+
+# --- スレッド数 ---
+THREADS=16
+
+# --- サンプルリストファイル名 ---
+RAW_SAMPLE_LIST="samples_202604"
+STAR_READY_LIST="star_ready_samples.txt"
 ```
 
-実行 / Run:
+> `STAR_OUTPUT_DIR` のサブディレクトリ (`bam/`, `log_star/`, `qc_reports/`, `array_logs/`) は  
+> config.sh の末尾で `mkdir -p` により自動作成される。手動作成は不要。
+
+**設定後の確認 / Check after editing:**
 
 ```bash
-# HPC の場合 / On HPC
+source ./config.sh
+# → "Config loaded successfully." と表示されれば OK
+echo $RAW_FASTQ_DIR
+echo $STAR_INDEX_MM
+```
+
+-----
+
+## 4. リファレンスのダウンロード & インデックス作成
+
+### 4-1. ディスク容量の目安 / Disk space
+
+|データ            |ヒト (GRCh38 v49)|マウス (GRCm39 M38)|
+|---------------|---------------|----------------|
+|ゲノム FASTA      |~3.2 GB        |~2.8 GB         |
+|GTF            |~1.5 GB        |~1.2 GB         |
+|**STAR インデックス**|**~30 GB**     |**~27 GB**      |
+|**合計目安**       |**~35 GB**     |**~31 GB**      |
+
+
+> STAR インデックスが最も大きい。ホームのクォータを先に確認。  
+> Check your home directory quota before running.
+
+### 4-2. ヒト / Human (GRCh38 / GENCODE v49)
+
+`create_genome_index_hs.sh` 冒頭の設定を編集:
+
+```bash
+BASE_DIR="/home/YOUR_USERNAME"   # ← 変更
+THREADS=16
+OVERHANG=149    # リード長 - 1 (150bp reads → 149)
+```
+
+実行:
+
+```bash
+# HPC
 qsub create_genome_index_hs.sh
 
-# ローカルの場合 / On local
+# ローカル
 bash create_genome_index_hs.sh
 ```
 
-処理内容:
-
-1. GENCODE v49 ファイルのダウンロード (transcripts, genome, GTF)
-1. STAR インデックスの構築 (~30〜60 分)
-1. IGV 用 BED ファイルの作成
-
-> **⚠ Salmon インデックスはスクリプト内でコメントアウト中。**  
-> Salmon を使う場合は `### Step 2` のコメントを外すこと。
-
------
-
-### 3-3. マウスの場合 / Mouse (GRCm39 / GENCODE M38)
-
-`create_genome_index_mm.sh` の設定を変更:
-
-```bash
-### --- パス設定 ---
-REF_DIR=${BASE_DIR}/Reference/mouse/    # ← human → mouse に変更
-
-MOUSE_GENOME="${REF_DIR}GRCm39.primary_assembly.genome.fa"
-MOUSE_GTF="${REF_DIR}gencode.vM38.primary_assembly.annotation.gtf"
-
-STAR_INDEX=${BASE_DIR}/gdc_reference/mm39_star_index/
-THREADS=16
-```
-
-ダウンロード URL はスクリプト内の `wget` 行で確認できる (GENCODE M38)。
-
-実行:
+### 4-3. マウス / Mouse (GRCm39 / GENCODE M38)
 
 ```bash
 qsub create_genome_index_mm.sh
@@ -248,274 +185,198 @@ qsub create_genome_index_mm.sh
 bash create_genome_index_mm.sh
 ```
 
-> マウス単体で IGV BED が必要な場合は `create_igv_bed.sh` を別途実行:
-> 
-> ```bash
-> bash create_igv_bed.sh
-> ```
-
------
-
-### 3-4. 完了確認 / Verify index creation
+### 4-4. 完了確認 / Verify
 
 ```bash
-# STAR インデックスが正常に作成されたか確認
-# Human
-ls ~/gdc_reference/star/GRCh38_v49_star_index/SAindex
-
-# Mouse
-ls ~/gdc_reference/mm39_star_index/SAindex
-
-# ファイルが存在すれば OK
+# SAindex ファイルが存在すれば OK
+ls ~/gdc_reference/star/GRCh38_v49_star_index/SAindex   # human
+ls ~/gdc_reference/mm39_star_index/SAindex               # mouse
 ```
 
 -----
 
-## 4. サンプルリストの作成
+## 5. サンプルリストの作成
 
-### 4-1. FASTQファイルの命名規則 / FASTQ naming convention
+### 5-1. FASTQファイルの命名規則 / Naming convention
 
-このパイプラインは以下の命名規則を前提とする:
+`create_sample_qclist_20260428.sh` は **R1/R2 を含むファイル名** を自動検出する。
 
 ```
-{SAMPLE_ID}_1.fq.gz    ← Read 1
-{SAMPLE_ID}_2.fq.gz    ← Read 2
+{SAMPLE_ID}_R1_{anything}.fq.gz   ← Read 1
+{SAMPLE_ID}_R2_{anything}.fq.gz   ← Read 2
 ```
 
-> `_R1_001.fastq.gz` のような形式の場合はリネームするかスクリプトのパターンを変更する。
+> サンプルIDの先頭文字でヒト/マウスを区別する（`config.sh` の `MOUSE_SAMP_KEY` / `HUMAN_SAMP_KEY`）。  
+> デフォルト: `mm` → マウス、`Hu` → ヒト。
 
------
-
-### 4-2. create_sample_qclist_20260428.sh の設定
-
-```bash
-### --- 設定項目 ---
-# フルパスで指定する / Use full path
-FASTQ_DIR="/Users/your_username/path/to/fastq"   # ← 変更
-
-OUTPUT_LIST="samples_202604"                       # ← 出力ファイル名
-```
-
-実行:
+### 5-2. 実行 / Run
 
 ```bash
 bash create_sample_qclist_20260428.sh
 ```
 
-スクリプトが行うこと:
+何をするか:
 
-- `_1` と `_2` のペアを自動検出 (1文字違いを検索するロジック)
-- 重複サンプル ID を `duplicate_warning.log` にサイレント記録
-- ソート済みのユニークリストを出力
+- `RAW_FASTQ_DIR` 内で `*R1*` ファイルを検索し、対応する `*R2*` の存在を確認
+- ファイル名から R1/R2 部分を除いてサンプルIDを抽出
+- ソート済みユニークリストを `samples_202604` に保存
 
-出力例:
-
-```
-sample_A
-sample_B
-sample_C
-```
-
-確認:
+**確認 / Check:**
 
 ```bash
 cat samples_202604
 wc -l samples_202604   # サンプル数を確認
 ```
 
------
+### 5-3. STAR 実行用リストの準備 / Prepare STAR-ready list
 
-## 5. パイプライン実行
-
-### 5-1. STAR パイプライン (fastq_pipe_2strand_STAR.sh)
-
-**Step 1: 設定を書き換える**
+QC & トリミングが終わったサンプルだけを `star_ready_samples.txt` に入れる。  
+`run_star_align.sh` はこちらを参照する。
 
 ```bash
-### --- 2. 変数の設定 ---
-SAMPLE_LIST="/home/YOUR_USERNAME/fastq/YOUR_PROJECT/samples_202604"  # ← 変更
+# 全サンプルをそのまま使う場合
+cp samples_202604 star_ready_samples.txt
 
-STAR_INDEX_DIR="/home/YOUR_USERNAME/gdc_reference/star/GRCh38_v49_star_index"
-#               マウスの場合 → gdc_reference/mm39_star_index
+# トリミング済みファイルの存在で自動フィルタする場合
+while read id; do
+  if [ -f "${BASE_DIR}/fastq/zebra/trimmed/${id}_trim_1.fq.gz" ]; then
+    echo "$id"
+  fi
+done < samples_202604 > star_ready_samples.txt
 
-RAW_FASTQ_DIR="/home/YOUR_USERNAME/fastq/YOUR_PROJECT/"   # ← 変更
-OUTPUT_DIR="/home/YOUR_USERNAME/STAR_output/YOUR_PROJECT/"  # ← 変更
-```
-
-**Step 2: 実行**
-
-```bash
-# HPC ジョブアレイとして全サンプル一括実行
-NUM=$(wc -l < samples_202604)
-qsub -t 1-${NUM} fastq_pipe_2strand_STAR.sh
-
-# ローカルで1サンプルだけ試す場合
-SGE_TASK_ID=1 bash fastq_pipe_2strand_STAR.sh
+wc -l star_ready_samples.txt
 ```
 
 -----
 
-#### STAR パラメータ解説 / STAR parameters explained
+## 6. Step 1: QC & トリミング (run_qc_trim.sh)
+
+### FastQC + fastp でリードの品質確認とアダプター除去を行う。
+
+**実行 / Run:**
 
 ```bash
-STAR \
-    --runThreadN ${THREADS} \
-    --genomeDir ${STAR_INDEX_DIR} \
-    --readFilesIn ${TRIM_FASTQ_1} ${TRIM_FASTQ_2} \
-    --readFilesCommand zcat \          # gzip 圧縮 FASTQ を直接読む
-    --outFileNamePrefix ${BAM_DIR}/${EXP_ID}. \
-    
-    # ── アライメント精度 ──────────────────────────────
-    --twopassMode Basic \
-    # 【推奨】2パスモード: 1回目で発見したスプライスジャンクションを
-    # 2回目のアライメントに活用。新規スプライシングの検出感度が上がる。
-    # 2-pass mode: use splice junctions found in pass 1 to improve pass 2.
-    
-    --outFilterMultimapNmax 20 \
-    # マルチマップリードを最大何箇所まで許容するか（デフォルト: 10）
-    # 融合遺伝子解析では高めにすることがある
-    # Max number of loci a read is allowed to map to (default: 10)
-    
-    --alignSJDBoverhangMin 1 \
-    # データベース由来スプライスジャンクションのオーバーハング最小値
-    # 1 にすると既知ジャンクションでは 1bp でもマップされる
-    # Minimum overhang for annotated junctions (1 = permissive)
-    
-    --outFilterMismatchNmax 10 \
-    # 許容するミスマッチ塩基数の最大値
-    # ゼブラフィッシュやマウスへのヒト細胞マッピングでは高めにすることも
-    # Max number of mismatches per read pair
-    
-    --alignIntronMax 300000 \
-    # イントロンの最大長 (bp)。哺乳類は 300,000〜500,000 が一般的
-    # Max intron size in bp (mammals: 300,000–500,000)
-    
-    --alignMatesGapMax 300000 \
-    # ペアエンドのリード間最大ゲノム距離
-    # Max genomic gap between mates (paired-end)
-    
-    --sjdbScore 2 \
-    # スプライスジャンクション由来アライメントへのボーナススコア
-    # Bonus score for reads crossing splice junctions
-    
-    --genomeLoad NoSharedMemory \
-    # ゲノムをプロセス間で共有しない（ジョブアレイでは通常これを使う）
-    # Don't share genome in memory across processes (safe for job arrays)
-    
-    # ── マルチマップフィルタ ──────────────────────────
-    --outFilterMatchNminOverLread 0.33 \
-    # マッチ塩基数 / リード長 の最小比 (デフォルト: 0.66)
-    # 0.33 に下げるとショートリードや末端が低品質なリードでもマップされやすい
-    # Min ratio of matched bases to read length (lowered from default 0.66)
-    
-    --outFilterScoreMinOverLread 0.33 \
-    # アライメントスコア / リード長 の最小比
-    # Min ratio of alignment score to read length
+# HPC ジョブアレイ (全サンプル一括)
+NUM=$(wc -l < samples_202604 | awk '{print $1}')
+qsub -t 1-${NUM} run_qc_trim.sh
 
-    # ── 出力形式 ──────────────────────────────────────
-    --outSAMtype BAM SortedByCoordinate \
-    # ゲノム座標でソートされた BAM ファイルを出力
-    # Output coordinate-sorted BAM
-    
-    --outSAMunmapped Within \
-    # マップされなかったリードも BAM に含める（QC・デバッグに有用）
-    # Keep unmapped reads in BAM (useful for QC)
-    
-    --outSAMattributes Standard \
-    # 標準的な SAM タグを付与 (NH, HI, NM, MD, AS)
-    # Add standard SAM tags
-    
-    --quantMode GeneCounts
-    # 遺伝子ごとのリードカウントを ReadsPerGene.out.tab に出力
-    # (unstranded / stranded / antisense の3列)
-    # Output per-gene read counts to ReadsPerGene.out.tab
-    # (3 columns: unstranded / stranded / antisense)
+# ローカルで1サンプルだけテスト
+bash run_qc_trim.sh sample_id_here
 ```
 
-:::details ストランド情報の確認 / How to check strandedness
+> スクリプト内部では `source ./config.sh` でパスを読み込む。  
+> トリミング済みファイルが既に存在する場合はスキップされる (`if [ ! -f ... ]`)。
 
-`ReadsPerGene.out.tab` の上部4行を確認する:
+**出力先 / Output:**
+
+```
+STAR_output/mouse/qc_reports/
+├── {SAMPLE}_fastqc.html       ← FastQC レポート (トリミング前)
+├── {SAMPLE}_fastp.html        ← fastp レポート
+└── {SAMPLE}_fastp.json
+
+fastq/zebra/trimmed/
+├── {SAMPLE}_trim_1.fq.gz      ← トリミング済み R1
+└── {SAMPLE}_trim_2.fq.gz      ← トリミング済み R2
+```
+
+**確認 / Check:**
 
 ```bash
-head -4 sample.ReadsPerGene.out.tab
-# N_unmapped    ...
-# N_multimapping ...
-# N_noFeature   ...
-# N_ambiguous   ...
+ls fastq/zebra/trimmed/ | wc -l    # ファイル数 = サンプル数 × 2 か確認
+# fastp レポートで trimming rate を確認
+open STAR_output/mouse/qc_reports/SAMPLE_fastp.html
 ```
 
-その後の数値を合計して、col2 (stranded) か col3 (antisense) のどちらが全体に占める割合が高いかで判断。
+-----
 
-```r
-# R での確認例
+## 7. Step 2: STAR アライメント (run_star_align.sh)
+
+### トリミング済みリードをゲノムにマッピングし、BAM とカウントテーブルを出力する。
+
+**ヒト/マウスの自動判別 / Auto species detection:**  
+サンプルIDの先頭が `mm` → マウス index を使用  
+サンプルIDの先頭が `Hu` → ヒト index を使用  
+それ以外 → エラーで停止
+
+**実行 / Run:**
+
+```bash
+# HPC ジョブアレイ
+NUM=$(wc -l < star_ready_samples.txt | awk '{print $1}')
+qsub -t 1-${NUM} run_star_align.sh
+
+# ローカルで1サンプルだけテスト
+bash run_star_align.sh mmSample1_L001
+```
+
+**主要 STAR パラメータ / Key parameters:**
+
+|パラメータ                    |値                           |説明                                 |
+|-------------------------|----------------------------|-----------------------------------|
+|`--twopassMode Basic`    |Basic                       |2パスモード。スプライスジャンクションの検出感度が上がる       |
+|`--outFilterMultimapNmax`|20                          |マルチマップ許容数（デフォルト10より高め）             |
+|`--outFilterMismatchNmax`|10                          |許容ミスマッチ数                           |
+|`--alignIntronMax`       |300000                      |イントロン最大長 (bp)                      |
+|`--quantMode GeneCounts` |-                           |遺伝子カウントを `ReadsPerGene.out.tab` に出力|
+|`--chimSegmentMin`       |15                          |キメラ (融合遺伝子) 検出の最小セグメント長            |
+|`--chimOutType`          |Junctions WithinBAM SoftClip|キメラ読みを BAM に含める                    |
+
+**出力先 / Output:**
+
+```
+STAR_output/mouse/
+├── bam/
+│   ├── {SAMPLE}.Aligned.sortedByCoord.out.bam
+│   ├── {SAMPLE}.Aligned.sortedByCoord.out.bam.bai  ← samtools index 要
+│   └── {SAMPLE}.ReadsPerGene.out.tab   ← カウントテーブル
+└── log_star/
+    ├── {SAMPLE}.Log.final.out    ← マッピング率サマリ
+    ├── {SAMPLE}.Log.out
+    └── {SAMPLE}.SJ.out.tab       ← スプライスジャンクション
+```
+
+**確認 / Check:**
+
+```bash
+# BAM ファイル数の確認
+ls STAR_output/mouse/bam/*.bam | wc -l
+
+# マッピング率の確認 (60% 以上が目安)
+grep "Uniquely mapped reads %" STAR_output/mouse/log_star/*.Log.final.out
+```
+
+-----
+
+## 8. カウントテーブルのストランド確認
+
+`ReadsPerGene.out.tab` には3列のカウントがある。
+
+|列   |意味              |
+|----|----------------|
+|col2|Unstranded      |
+|col3|Stranded (sense)|
+|col4|Antisense       |
+
+どの列を使うか確認する:
+
+```bash
+# R での確認
 counts <- read.table("sample.ReadsPerGene.out.tab", skip=4)
-colSums(counts[,2:4])
+colSums(counts[, 2:4])
 # 最も大きい列がそのライブラリのストランドに対応
 ```
 
-:::
+> 最も合計が大きい列を DESeq2 / edgeR に渡す。
 
 -----
 
-### 5-2. Salmon パイプライン (fastq_pipe_2strand_Salmon.sh)
+## 9. IGV での可視化
 
-**設定変更箇所:**
-
-```bash
-SAMPLE_LIST="..."        # ← STAR と同じリストを使えばよい
-
-SALMON_INDEX_DIR="/home/YOUR_USERNAME/gdc_reference/salmon/gencode.v49.human_salmon_index"
-#                  マウスの場合 → gencode.vM38.M_salmon_index
-
-RAW_FASTQ_DIR="..."
-OUTPUT_DIR="..."
-```
-
-**実行:**
+IGV BED ファイルはインデックス作成時に自動生成される。  
+マウス単体で別途必要な場合:
 
 ```bash
-NUM=$(wc -l < samples_202604)
-qsub -t 1-${NUM} fastq_pipe_2strand_Salmon.sh
-
-# ローカル実行
-SGE_TASK_ID=1 bash fastq_pipe_2strand_Salmon.sh
-```
-
-**Salmon quant パラメータ:**
-
-```bash
-salmon quant \
-    -i ${SALMON_INDEX_DIR} \   # インデックスディレクトリ
-    -l A \                     # ライブラリタイプ自動検出 (A = auto)
-    -1 ${TRIM_FASTQ_1} \
-    -2 ${TRIM_FASTQ_2} \
-    -p ${THREADS} \
-    --validateMappings \       # より厳密なマッピング検証（推奨）
-    --gcBias \                 # GC バイアス補正（推奨: ライブラリ準備バイアスを補正）
-    -o ${OUTPUT_DIR}/${EXP_ID}_quant
-```
-
------
-
-### 5-3. ヒト ↔ マウスの切り替えチェックリスト
-
-パイプラインをヒトからマウスへ（またはその逆に）切り替えるとき、変更が必要な変数一覧:
-
-|変数                |ヒト (Human)                                   |マウス (Mouse)                                   |
-|------------------|---------------------------------------------|----------------------------------------------|
-|`STAR_INDEX_DIR`  |`GRCh38_v49_star_index`                      |`mm39_star_index`                             |
-|`SALMON_INDEX_DIR`|`gencode.v49.human_salmon_index`             |`gencode.vM38.M_salmon_index`                 |
-|`OUTPUT_DIR`      |`STAR_output/human_project/`                 |`STAR_output/mouse_project/`                  |
-|GTF (tximport 用)  |`gencode.v49.primary_assembly.annotation.gtf`|`gencode.vM38.primary_assembly.annotation.gtf`|
-
------
-
-## 6. IGV での可視化
-
-IGV BED ファイルはインデックス作成時に自動生成される。マウス単体の場合のみ `create_igv_bed.sh` を別途実行する。
-
-```bash
-# マウス用 BED が未作成の場合
 bash create_igv_bed.sh
 ```
 
@@ -523,69 +384,77 @@ IGV 読み込み手順:
 
 ```
 1. Genomes > Load Genome from File
-   → GRCh38.primary_assembly.genome.fa  (human)
    → GRCm39.primary_assembly.genome.fa  (mouse)
+   → GRCh38.primary_assembly.genome.fa  (human)
 
 2. File > Load from File
-   → human_transcripts.bed  or  mouse_transcripts.bed
-     (BED12: エキソン/イントロン構造が表示される)
+   → mouse_transcripts.bed  or  human_transcripts.bed
 
-3. 検索ボックスで遺伝子名を入力
-   例: TP53, MYC (human) / Trp53, Myc (mouse)
+3. 検索ボックスで遺伝子名を入力 (例: Trp53, Myc)
 ```
 
 -----
 
-## 7. 実行順序まとめ / Execution order summary
+## 10. 実行順序まとめ / Execution order
 
 ```
-Step 1  環境構築
-        bash setup.sh
-        ↓ conda activate bio_tools (毎回必要)
+Step 0  config.sh を編集 ← まずここ
+        source ./config.sh  # "Config loaded successfully." を確認
 
-Step 2  リファレンス + インデックス作成 (初回のみ / First time only)
-        bash create_genome_index_hs.sh   # ヒト
-        bash create_genome_index_mm.sh   # マウス
-        ↓ SAindex ファイルの存在を確認してから次へ
+Step 1  ツールインストール (初回のみ)
+        bash setup.sh
+
+Step 2  リファレンス & インデックス作成 (初回のみ)
+        bash create_genome_index_hs.sh   # human
+        bash create_genome_index_mm.sh   # mouse
+        → ls ~/gdc_reference/star/*/SAindex で確認
 
 Step 3  サンプルリスト作成
-        ① FASTQ_DIR のパスを編集
         bash create_sample_qclist_20260428.sh
-        ↓ cat samples_202604 で内容を目視確認
+        → cat samples_202604 で目視確認
 
-Step 4  アライメント or 定量
-        ② STAR_INDEX_DIR / SALMON_INDEX_DIR・パスを編集
-        qsub -t 1-N fastq_pipe_2strand_STAR.sh
-        # または
-        qsub -t 1-N fastq_pipe_2strand_Salmon.sh
-        ↓ ログファイルでエラーがないことを確認
+Step 4  QC & トリミング
+        qsub -t 1-N run_qc_trim.sh
+        → trimmed/ にファイルが揃っているか確認
 
-Step 5  (任意) IGV BED 作成
-        bash create_igv_bed.sh   # マウスのみ必要な場合
+Step 5  STAR 実行用リスト作成
+        cp samples_202604 star_ready_samples.txt  # (または絞り込み)
+
+Step 6  STAR アライメント
+        qsub -t 1-N run_star_align.sh
+        → Log.final.out でマッピング率を確認
 ```
 
-:::message
-**各ステップで確認してから次へ進むこと。**  
-Verify each step before proceeding to the next.
+-----
 
-- Step 2 完了確認: `ls ~/gdc_reference/star/*/SAindex`
-- Step 3 完了確認: `wc -l samples_202604`
-- Step 4 完了確認: `ls STAR_output/*/bam/*.bam | wc -l`
-  :::
+## 11. ヒト ↔ マウス 切り替えチェックリスト
+
+`config.sh` で変更するのみ。スクリプト本体は触らない。
+
+|変数                                 |ヒト                         |マウス                        |
+|-----------------------------------|---------------------------|---------------------------|
+|`STAR_INDEX_HU` / `STAR_INDEX_MM`  |`GRCh38_v49_star_index`    |`mm39_star_index`          |
+|`GENCODE_GTF_HU` / `GENCODE_GTF_MM`|`gencode.v49...gtf`        |`gencode.vM38...gtf`       |
+|`STAR_OUTPUT_DIR`                  |`STAR_output/human_project`|`STAR_output/mouse_project`|
+|`RAW_SAMPLE_LIST` のIDプレフィックス       |`Hu`                       |`mm`                       |
+
+
+> `run_star_align.sh` はサンプルIDの先頭を `config.sh` の `MOUSE_SAMP_KEY` / `HUMAN_SAMP_KEY`  
+> と照合して index を自動選択する。プレフィックスが合っていないとエラーで停止する。
 
 -----
 
-## 8. よくあるエラーと対処 / Troubleshooting
+## 12. よくあるエラーと対処 / Troubleshooting
 
-|エラー / Error                          |原因 / Cause       |対処 / Fix                          |
-|-------------------------------------|-----------------|----------------------------------|
-|`SAindex not found`                  |インデックス未完成        |Step 2 を再実行。ログを確認                 |
-|`FASTQ files not found`              |パスかファイル名の誤り      |`ls ${RAW_FASTQ_DIR}` で確認         |
-|`fastp failed`                       |メモリ不足 or 破損ファイル  |`md5sum` でファイル整合性を確認              |
-|`No valid paired-end files found`    |命名規則が `_1/_2` でない|スクリプト内のパターンを変更                    |
-|STAR: `genome files are inconsistent`|インデックスが壊れている     |インデックスを削除して再構築                    |
-|Salmon: `index not found`            |インデックスパスの誤り      |`ls ${SALMON_INDEX_DIR}/info.json`|
+|エラー                                  |原因                |対処                                                   |
+|-------------------------------------|------------------|-----------------------------------------------------|
+|`SAindex not found`                  |インデックス未完成         |Step 2 を再実行。ログ確認                                     |
+|`FASTQ files not found`              |パスかファイル名の誤り       |`ls ${RAW_FASTQ_DIR}` で確認                            |
+|`ERROR: Unknown species prefix`      |サンプルIDのプレフィックス不一致 |`config.sh` の `MOUSE_SAMP_KEY` / `HUMAN_SAMP_KEY` を確認|
+|fastp failed                         |メモリ不足 or ファイル破損   |`md5sum` でファイル整合性を確認                                 |
+|STAR: `genome files are inconsistent`|インデックスが壊れている      |インデックスを削除して再構築                                       |
+|`Config loaded` が出ない                 |`config.sh` のパスが違う|スクリプトと同じディレクトリで実行しているか確認                             |
 
 -----
 
-*Last updated: 2026-04-28*
+*Last updated: 2026-04-29*
