@@ -19,16 +19,36 @@ BASE_DIR=$(pwd)
 mkdir -p logs
 mkdir -p ~/Reference/mouse && cd ~/Reference/mouse
 
-# トランスクリプトームFASTA（これがSalmonの主役）
-wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M38/gencode.vM38.transcripts.fa.gz
+download_if_missing() {
+    local url="$1"
+    # URLからファイル名を取得し、.gzを除いた名前をターゲットとする
+    local gzipped_file=$(basename "$url")
+    local filename="${gzipped_file%.gz}"
 
-# ゲノムFASTA（decoy用）
-wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M38/GRCm39.primary_assembly.genome.fa.gz
+    if [ -f "${filename}" ]; then
+        echo "  ✓ Already exists (skip): ${filename}"
+    else
+        echo "  Downloading: ${gzipped_file} from EBI..."
+        
+        # --timeout: 接続待ち時間を30秒に制限
+        # --tries: 失敗しても10回リトライ
+        # --continue: 中断された場合に途中から再開
+        if wget --timeout=30 --tries=10 --continue --show-progress "$url"; then
+            echo "  Extracting: ${gzipped_file}"
+            # -f で上書き確認をスキップ
+            gunzip -f "${gzipped_file}"
+            echo "  ✓ Done: ${filename}"
+        else
+            echo "  Error: Failed to download ${url} after multiple attempts."
+            return 1
+        fi
+    fi
+}
 
-# GTF（tximeta/tximport用。インデックス自体には直接不要）
-wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M38/gencode.vM38.primary_assembly.annotation.gtf.gz
 
-gunzip *.gz
+download_if_missing "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M38/gencode.vM38.transcripts.fa.gz"
+download_if_missing "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M38/GRCm39.primary_assembly.genome.fa.gz"
+download_if_missing "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M38/gencode.vM38.primary_assembly.annotation.gtf.gz"
 
 # # ゲノムのchromo名だけ抜き出す（decoyファイル）
 # grep '^>' GRCm39.primary_assembly.genome.fa \

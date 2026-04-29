@@ -46,21 +46,35 @@ echo "Step 1: Downloading reference files (GENCODE v49)..."
 mkdir -p ${REF_DIR} && cd ${REF_DIR}
 
 download_if_missing() {
-    local url=$1
-    local filename=$(basename ${url%.gz})
+    local url="$1"
+    # URLからファイル名を取得し、.gzを除いた名前をターゲットとする
+    local gzipped_file=$(basename "$url")
+    local filename="${gzipped_file%.gz}"
+
     if [ -f "${filename}" ]; then
         echo "  ✓ Already exists (skip): ${filename}"
     else
-        echo "  Downloading: $(basename $url)"
-        wget -q --show-progress "$url"
-        gunzip "$(basename $url)"
-        echo "  ✓ Done: ${filename}"
+        echo "  Downloading: ${gzipped_file} from EBI..."
+        
+        # --timeout: 接続待ち時間を30秒に制限
+        # --tries: 失敗しても10回リトライ
+        # --continue: 中断された場合に途中から再開
+        if wget --timeout=30 --tries=10 --continue --show-progress "$url"; then
+            echo "  Extracting: ${gzipped_file}"
+            # -f で上書き確認をスキップ
+            gunzip -f "${gzipped_file}"
+            echo "  ✓ Done: ${filename}"
+        else
+            echo "  Error: Failed to download ${url} after multiple attempts."
+            return 1
+        fi
     fi
 }
 
-download_if_missing "[https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/gencode.v49.transcripts.fa.gz](https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/gencode.v49.transcripts.fa.gz)"
-download_if_missing "[https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/GRCh38.primary_assembly.genome.fa.gz](https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/GRCh38.primary_assembly.genome.fa.gz)"
-download_if_missing "[https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/gencode.v49.primary_assembly.annotation.gtf.gz](https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/gencode.v49.primary_assembly.annotation.gtf.gz)"
+
+download_if_missing "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/gencode.v49.transcripts.fa.gz"
+download_if_missing "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/GRCh38.primary_assembly.genome.fa.gz"
+download_if_missing "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/gencode.v49.primary_assembly.annotation.gtf.gz"
 
 echo "✓ All reference files ready."
 

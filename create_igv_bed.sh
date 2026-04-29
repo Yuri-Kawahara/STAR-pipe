@@ -70,7 +70,7 @@ echo “”
 
 echo “Step 1: Creating gene-level BED6…”
 
-awk -F’\t’ ‘BEGIN {OFS=”\t”}
+awk -F’\t’ ’BEGIN {OFS=”\t”}
 /^#/ { next }
 $3 == “gene” {
 match($9, /gene_id “([^”]+)”/, gene_id_arr);
@@ -95,7 +95,7 @@ fi
 
 echo “Step 2: Creating transcript-level BED12 (this may take a few minutes)…”
 
-python3 - <<‘PYTHON_SCRIPT’ “${GTF}” “${TRANSCRIPT_BED}”
+python3 - <<’PYTHON_SCRIPT’ “${GTF}” “${TRANSCRIPT_BED}”
 import sys
 from collections import defaultdict
 
@@ -105,12 +105,12 @@ bed_file = sys.argv[2]
 # 転写産物ごとにエキソン情報を格納
 
 transcripts = defaultdict(lambda: {
-‘chr’: ‘’, ‘strand’: ‘’, ‘exons’: [],
-‘gene_name’: ‘’, ‘start’: float(‘inf’), ‘end’: 0
+’chr’: ’’, ’strand’: ’’, ’exons’: [],
+’gene_name’: ’’, ’start’: float(’inf’), ’end’: 0
 })
 
 print(”  Reading GTF…”, flush=True)
-with open(gtf_file, ‘r’) as f:
+with open(gtf_file, ’r’) as f:
 for line in f:
 if line.startswith(’#’):
 continue
@@ -118,7 +118,7 @@ fields = line.strip().split(’\t’)
 if len(fields) < 9:
 continue
 
-```
+
     feature = fields[2]
     if feature not in ['transcript', 'exon']:
         continue
@@ -152,16 +152,16 @@ continue
 
     if feature == 'exon':
         t['exons'].append((start, end))
-```
+
 
 print(”  Writing BED12…”, flush=True)
 count = 0
-with open(bed_file, ‘w’) as out:
+with open(bed_file, ’w’) as out:
 for tid, d in sorted(transcripts.items()):
-if not d[‘exons’]:
+if not d[’exons’]:
 continue
 
-```
+
     exons      = sorted(d['exons'])
     tx_start   = d['start']
     tx_end     = d['end']
@@ -175,7 +175,7 @@ continue
         f"{block_sizes}\t{block_starts}\n"
     )
     count += 1
-```
+
 
 print(f”  Done. {count} transcripts written.”)
 PYTHON_SCRIPT
