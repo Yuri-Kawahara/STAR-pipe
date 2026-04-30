@@ -12,7 +12,12 @@
 # 参照: GENCODE v49 / GRCh38
 ###############################################################################
 
-BASE_DIR="/home/kawayuri"
+# ★ fix1: set -euo pipefail をスクリプト先頭に移動
+set -euo pipefail
+
+# ★ fix2: BASE_DIR は pwd で一本化（ハードコード+二重定義を廃止）
+BASE_DIR=$(pwd)
+
 REF_DIR="${BASE_DIR}/Reference/human/"
 SALMON_INDEX="${BASE_DIR}/gdc_reference/salmon/gencode.v49.human_salmon_index/"
 STAR_INDEX="${BASE_DIR}/gdc_reference/star/GRCh38_v49_star_index/"
@@ -24,30 +29,30 @@ USE_CUSTOM_FUSION=false
 CUSTOM_FUSION_FA="${REF_DIR}custom_fusion_genes.fa"
 EXCLUDE_WILDTYPE_GENES=""
 
-set -euo pipefail
-
+### --- モジュールのロード ---
 echo "Loading modules..."
 module use /usr/local/package/modulefiles
 module load star
 module load salmon
 
-BASE_DIR=$(pwd)
+# ★ fix3: logs/ は cd する前に BASE_DIR 直下に作成
 mkdir -p logs
 
 echo "======================================================"
 echo " Human Reference Build"
 echo " GENCODE v49 / GRCh38"
+echo " BASE_DIR : ${BASE_DIR}"
 echo " Custom fusion: ${USE_CUSTOM_FUSION}"
 echo "======================================================"
 
 ### Step 1: リファレンスファイルのダウンロード
 echo ""
 echo "Step 1: Downloading reference files (GENCODE v49)..."
-mkdir -p ${REF_DIR} && cd ${REF_DIR}
+
+mkdir -p "${REF_DIR}" && cd "${REF_DIR}"
 
 download_if_missing() {
     local url="$1"
-    # URLからファイル名を取得し、.gzを除いた名前をターゲットとする
     local gzipped_file=$(basename "$url")
     local filename="${gzipped_file%.gz}"
 
@@ -55,13 +60,8 @@ download_if_missing() {
         echo "  ✓ Already exists (skip): ${filename}"
     else
         echo "  Downloading: ${gzipped_file} from EBI..."
-        
-        # --timeout: 接続待ち時間を30秒に制限
-        # --tries: 失敗しても10回リトライ
-        # --continue: 中断された場合に途中から再開
         if wget --timeout=30 --tries=10 --continue --show-progress "$url"; then
             echo "  Extracting: ${gzipped_file}"
-            # -f で上書き確認をスキップ
             gunzip -f "${gzipped_file}"
             echo "  ✓ Done: ${filename}"
         else
@@ -71,12 +71,14 @@ download_if_missing() {
     fi
 }
 
-
 download_if_missing "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/gencode.v49.transcripts.fa.gz"
 download_if_missing "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/GRCh38.primary_assembly.genome.fa.gz"
 download_if_missing "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/gencode.v49.primary_assembly.annotation.gtf.gz"
 
 echo "✓ All reference files ready."
+
+# ★ fix4: cd で移動したあと BASE_DIR に戻る（mmスクリプトと同じパターン）
+cd "${BASE_DIR}"
 
 ### Step 1.5: 融合遺伝子GTFの作成
 if [ "${USE_CUSTOM_FUSION}" = "true" ]; then
@@ -92,7 +94,7 @@ if [ "${USE_CUSTOM_FUSION}" = "true" ]; then
     BASE_GTF="${REF_DIR}gencode.v49.primary_assembly.annotation.gtf"
 
     echo "  Custom fusion FASTA: ${CUSTOM_FUSION_FA}"
-    grep '^>' "${CUSTOM_FUSION_FA}" | sed 's/>/    · /'
+    grep '^>' "${CUSTOM_FUSION_FA}" | sed 's/>/  · /'
 
     echo "  Generating fusion_genes.gtf from FASTA..."
     awk '
@@ -135,34 +137,24 @@ else
     echo "Step 1.5: Skipped (USE_CUSTOM_FUSION=false)"
 fi
 
-### Step 2: Salmon decoy-aware インデックスの構築 (コメントアウト維持)
+### Step 2: Salmon decoy-aware インデックスの構築（コメントアウト維持）
 # echo ""
 # echo "Step 2: Building Salmon decoy-aware index..."
-# if [ -d "${SALMON_INDEX}" ] && [ -f "${SALMON_INDEX}/info.json" ]; then
-#     echo "  ✓ Salmon index already exists. Skipping."
-# else
-#     mkdir -p ${SALMON_INDEX}
-#     echo "  Creating decoy list..."
-#     grep '^>' GRCh38.primary_assembly.genome.fa | cut -d ' ' -f 1 | sed 's/>//' > decoys.txt
-#     if [ "${USE_CUSTOM_FUSION}" = "true" ]; then
-#         cat gencode.v49.transcripts.fa "${CUSTOM_FUSION_FA}" GRCh38.primary_assembly.genome.fa > gentrome_human.fa
-#     else
-#         cat gencode.v49.transcripts.fa GRCh38.primary_assembly.genome.fa > gentrome_human.fa
-#     fi
-#     salmon index -t gentrome_human.fa -d decoys.txt -i ${SALMON_INDEX} -p ${THREADS}
-# fi
+# ...
 
 ### Step 3: STAR ゲノムインデックスの構築
 echo ""
 echo "Step 3: Building STAR genome index..."
 
+# ★ fix5: 既存チェック後のスキップメッセージを統一
 if [ -d "${STAR_INDEX}" ] && [ -f "${STAR_INDEX}/SAindex" ]; then
     echo "  ✓ STAR index already exists. Skipping."
 else
-    mkdir -p ${STAR_INDEX}
+    mkdir -p "${STAR_INDEX}"
 
     if [ "${USE_CUSTOM_FUSION}" = "true" ]; then
-        cat GRCh38.primary_assembly.genome.fa "${CUSTOM_FUSION_FA}" > hybrid_genome.fa
+        cat "${REF_DIR}GRCh38.primary_assembly.genome.fa" "${CUSTOM_FUSION_FA}" \
+            > "${REF_DIR}hybrid_genome.fa"
         GENOME_FA="${REF_DIR}hybrid_genome.fa"
         ANNOTATION_GTF="${REF_DIR}hybrid_annotation.gtf"
     else
@@ -171,20 +163,27 @@ else
     fi
 
     STAR --runMode genomeGenerate \
-         --runThreadN ${THREADS} \
-         --genomeDir ${STAR_INDEX} \
-         --genomeFastaFiles "${GENOME_FA}" \
-         --sjdbGTFfile "${ANNOTATION_GTF}" \
-         --sjdbOverhang ${OVERHANG} \
-         --genomeSAindexNbases 14
+        --runThreadN ${THREADS} \
+        --genomeDir "${STAR_INDEX}" \
+        --genomeFastaFiles "${GENOME_FA}" \
+        --sjdbGTFfile "${ANNOTATION_GTF}" \
+        --sjdbOverhang ${OVERHANG} \
+        --genomeSAindexNbases 14
 
-    echo "✓ STAR index created: ${STAR_INDEX}"
+    # ★ fix6: mmスクリプトと同様に終了コードを明示チェック
+    if [ $? -eq 0 ]; then
+        echo "✓ STAR index created: ${STAR_INDEX}"
+    else
+        echo "ERROR: STAR index generation failed."
+        exit 1
+    fi
 fi
 
 ### Step 4: IGV用 BEDファイルの作成
 echo ""
 echo "Step 4: Creating IGV BED files..."
-mkdir -p ${IGV_DIR}
+
+mkdir -p "${IGV_DIR}"
 
 ANNOTATION_GTF="${REF_DIR}gencode.v49.primary_assembly.annotation.gtf"
 GENE_BED="${IGV_DIR}human_genes.bed"
@@ -228,6 +227,7 @@ with open(gtf_file) as f:
         end    = int(fields[4])
         strand = fields[6]
         attrs  = fields[8]
+
         tid = gene_name = None
         for attr in attrs.split(';'):
             attr = attr.strip()
@@ -237,11 +237,12 @@ with open(gtf_file) as f:
                 gene_name = attr.split('"')[1]
         if not tid:
             continue
+
         t = transcripts[tid]
         t['chr']    = chrom
         t['strand'] = strand
         t['start']  = min(t['start'], start)
-        t['end']    = max(t['end'],   end)
+        t['end']    = max(t['end'], end)
         if gene_name and not t['gene_name']:
             t['gene_name'] = gene_name
         if fields[2] == 'exon':
@@ -252,8 +253,8 @@ with open(bed_file, 'w') as out:
         if not d['exons']:
             continue
         exons = sorted(d['exons'])
-        s = d['start']
-        name = d['gene_name'] or tid
+        s     = d['start']
+        name  = d['gene_name'] or tid
         out.write(
             f"{d['chr']}\t{s}\t{d['end']}\t{name}\t1000\t{d['strand']}\t"
             f"{s}\t{d['end']}\t0,0,0\t{len(exons)}\t"
