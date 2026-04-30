@@ -59,7 +59,7 @@ STAR --runThreadN ${RUN_THREADS} \
     --outFilterScoreMinOverLread 0.33 \
     --outSAMstrandField intronMotif \
     --outSAMtype BAM SortedByCoordinate \
-    --quantMode GeneCounts TranscriptomeSAM\
+    --quantMode GeneCounts TranscriptomeSAM \
     --outSAMunmapped Within \
     --outSAMattributes Standard \
     --quantMode GeneCounts \
