@@ -70,7 +70,7 @@ FAIL=0
 while IFS= read -r EXP_ID; do
 [[ -z “${EXP_ID}” || “${EXP_ID}” =~ ^# ]] && continue
 
-```
+
 COUNT=$((COUNT + 1))
 echo ""
 echo "[${COUNT}/${TOTAL}] ${EXP_ID}"
@@ -158,7 +158,7 @@ else
     echo "  ERROR: STAR failed for ${EXP_ID}"
     FAIL=$((FAIL + 1))
 fi
-```
+
 
 done < “${STAR_READY_LIST}”
 
