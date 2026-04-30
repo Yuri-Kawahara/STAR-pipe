@@ -19,8 +19,8 @@ fi
 
 if [ -z "${EXP_ID}" ]; then exit 1; fi
 
-module load fastqc
-module load fastp
+# module load fastqc
+# module load fastp
 
 # IDが含まれるR1/R2ファイルをディレクトリ内から検索
 RAW_FASTQ_1=$(ls ${RAW_FASTQ_DIR}/${EXP_ID}*R1*.gz | head -n 1)

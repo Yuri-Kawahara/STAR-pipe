@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # mouse sample flag
-MOUSE_SAMP_KEY="^mm"
+MOUSE_SAMP_KEY="^ms"
 
 # human sample flag
 HUMAN_SAMP_KEY="^Hu"
@@ -27,7 +27,7 @@ STAR_OUTPUT_DIR="${BASE_DIR}/STAR_output/mouse"
 THREADS=16
 
 # --- リストファイル名 ---
-RAW_SAMPLE_LIST="samples_202604"
+RAW_SAMPLE_LIST="samples_202604.txt"
 STAR_READY_LIST="star_ready_samples.txt"
 
 # --- ディレクトリの自動作成 ---
