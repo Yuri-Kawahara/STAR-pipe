@@ -70,7 +70,6 @@ FAIL=0
 while IFS= read -r EXP_ID; do
 [[ -z “${EXP_ID}” || “${EXP_ID}” =~ ^# ]] && continue
 
-```
 COUNT=$((COUNT + 1))
 echo ""
 echo "[${COUNT}/${TOTAL}] ${EXP_ID}"
@@ -133,12 +132,13 @@ STAR --runThreadN "${THREADS}" \
     --outFilterMultimapNmax 20 \
     --alignSJDBoverhangMin 1 \
     --outFilterMismatchNmax 10 \
-    --alignIntronMax 300000 \
-    --alignMatesGapMax 300000 \
+    --alignIntronMax 1000000 \
+    --alignMatesGapMax 1000000 \
     --sjdbScore 2 \
     --genomeLoad NoSharedMemory \
     --outFilterMatchNminOverLread 0.33 \
     --outFilterScoreMinOverLread 0.33 \
+    --outSAMstrandField intronMotif \
     --outSAMtype BAM SortedByCoordinate \
     --outSAMunmapped Within \
     --outSAMattributes Standard \
@@ -158,7 +158,6 @@ else
     echo "  ERROR: STAR failed for ${EXP_ID}"
     FAIL=$((FAIL + 1))
 fi
-```
 
 done < “${STAR_READY_LIST}”
 

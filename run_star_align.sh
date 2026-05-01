@@ -50,7 +50,7 @@ STAR --runThreadN ${RUN_THREADS} \
     --outFilterMismatchNmax 10 \
     --outFilterMultimapNmax 20 \
     --alignIntronMax 1000000 \
-    --alignIntromMin 20 \ 
+    --alignIntronMin 20 \ 
     --alignMatesGapMax 1000000 \
     --sjdbScore 2 \
     --limitBAMsortRAM 0 \
@@ -62,7 +62,6 @@ STAR --runThreadN ${RUN_THREADS} \
     --quantMode GeneCounts TranscriptomeSAM \
     --outSAMunmapped Within \
     --outSAMattributes Standard \
-    --quantMode GeneCounts \
     --chimSegmentMin 15 \
     --chimJunctionOverhangMin 15 \
     --chimOutType Junctions WithinBAM SoftClip \
@@ -71,3 +70,9 @@ STAR --runThreadN ${RUN_THREADS} \
 
 mv ${BAM_DIR}/${EXP_ID}.Log.* ${LOG_DIR}/
 mv ${BAM_DIR}/${EXP_ID}.SJ.out.tab ${LOG_DIR}/
+
+# --limitBAMsortRAM
+# default: 0
+# int>=0: maximum available RAM (bytes) for sorting BAM. If =0, it will be set
+# to the genome index size. 0 value can only be used with –genomeLoad
+# NoSharedMemory option.
